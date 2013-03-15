@@ -11,7 +11,9 @@ use threads::shared;
 
 use Getopt::Long qw(:config gnu_getopt);
 
-our ($verbose, $instance);
+my $threads = 4;  # default 4 threads
+my $verbose = 0;  # default non-verbose
+my $instance = '';
 
 BEGIN {
 # get instance for use
@@ -29,6 +31,7 @@ EOF
 
 	my $help;
 	GetOptions(
+			't|threads=i' =>\$threads,
 			'h|help' => \$help,
 			'v|verbose' => \$verbose,
 		  ) or usage(1);
@@ -51,7 +54,6 @@ my $ppdbh;
 FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 
 ### Set up the variables
-my $THREAD_LIMIT = 5;
 # create queue of objects to be worked on
 my $workqueue = Thread::Queue->new();
 # an array of the threads. we use $THREAD_LIMIT threads.
@@ -85,7 +87,11 @@ my $filelock : shared;
 }
 
 # start the worker threads
-push (@threads,threads->new(\&worker)) for 1..$THREAD_LIMIT;
+for (1 .. $threads) {
+	my $t = threads->new(\&worker);
+	push (@threads,$t);
+	print "Thread " . $t->tid() ." created\n" if $verbose;
+}
 
 # now we twiddle thumbs and wait for threads to finish working
 $_->join() for @threads;
@@ -99,25 +105,25 @@ sub worker {
 		}
 
 		# put it through FPD::GFF3
-		my $gff = FPD::GFF3->new();
-		$gff->{refseq} = undef;
-		$gff->{start} = undef;
-		$gff->{end} = undef;
-		$gff->{source} = undef;
-		$gff->{method} = undef;
-		$gff->{strand} = undef;
-		$gff->{score} = undef;
-		$gff->{refseq} = undef;
-		$gff->{refseq} = undef;
+#		my $gff = FPD::GFF3->new();
+#		$gff->{refseq} = undef;
+#		$gff->{start} = undef;
+#		$gff->{end} = undef;
+#		$gff->{source} = undef;
+#		$gff->{method} = undef;
+#		$gff->{strand} = undef;
+#		$gff->{score} = undef;
+#		$gff->{refseq} = undef;
+#		$gff->{refseq} = undef;
 
 		my $filename = $feature->{type} . $feature->{track} . ".gff3";
  
 		{
 			lock $filelock; # make sure no other threads are writing
-			open FH, ">>$filename";
+			# open FH, ">>$filename";
 			# print FH $gff->to_text();
-			print threads->tid() . ": output $feature->{name} to $filename\n";
-			close FH;
+			print threads->tid() . ": output $feature->{name} to $filename\n" if $verbose;
+			# close FH;
 		}
 		
 	}
