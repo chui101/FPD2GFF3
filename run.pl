@@ -11,9 +11,7 @@ use threads::shared;
 
 use Getopt::Long qw(:config gnu_getopt);
 
-my $threads = 4;  # default 4 threads
-my $verbose = 0;  # default non-verbose
-my $instance = '';
+our ($threads, $verbose, $instance);
 
 BEGIN {
 # get instance for use
@@ -38,6 +36,7 @@ EOF
 
 	$help and usage(0);
 	@ARGV == 1 or usage(2);
+	$threads or $threads = 4;
 	$instance = shift;
 }
 
@@ -125,6 +124,7 @@ sub worker {
 			print threads->tid() . ": output $feature->{name} to $filename\n" if $verbose;
 			# close FH;
 		}
+		sleep 1;
 		
 	}
 	return;
