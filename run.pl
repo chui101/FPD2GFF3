@@ -109,7 +109,7 @@ sub worker {
 		$gff->{refseq} = undef;
 		$gff->{refseq} = undef;
 
-		$filename = $feature->{type} . $feature->{track} . ".gff3";
+		my $filename = $feature->{type} . $feature->{track} . ".gff3";
  
 		{
 			lock $filelock; # make sure no other threads are writing
