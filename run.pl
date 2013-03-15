@@ -67,7 +67,7 @@ my $filelock : shared;
 
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
-		my $feature = {};
+		my $feature : shared = {};
 		$feature->{name} = $row->{gname};
 		# if feature has both type and track number (?) then split it
 		if ($row->{gclass} =~ /(\w+):(\d+)/) {
