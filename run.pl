@@ -70,7 +70,7 @@ my $filelock : shared;
 		my $feature = {};
 		$feature->{name} = $row->{gname};
 		# if feature has both type and track number (?) then split it
-		if ($row->{gclass} ~= /(\w+):(\d+)/) {
+		if ($row->{gclass} =~ /(\w+):(\d+)/) {
 			$feature->{type} = $1;
 			$feature->{track} = $2;
 		# otherwise the whole thing is stored
