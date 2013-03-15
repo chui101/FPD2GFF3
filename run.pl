@@ -91,7 +91,7 @@ $_->join() for @threads;
 
 sub worker {
 	while (my $feature = $workqueue->dequeue_nb()) {
-		return if ($feature == undef); # end of queue, rejoin
+		return unless $feature; # end of queue, rejoin
 		# query data for the feature
 		if ($feature->{'type'} eq "fgenesh") {
 			# do the query for fgenesh
