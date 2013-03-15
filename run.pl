@@ -76,6 +76,7 @@ my $filelock : shared;
 		# otherwise the whole thing is stored
 		} else {
 			$feature{type} = $row->{gclass};
+			$feature{track} = "";
 		}
 
 		# enqueue the feature
