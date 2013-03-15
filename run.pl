@@ -9,24 +9,48 @@ use threads;
 use Thread::Queue;
 use threads::shared;
 
+use Getopt::Long qw(:config gnu_getopt);
+
+our ($verbose, $instance);
+
 BEGIN {
 # get instance for use
-# print usage if needed
+	sub usage(;$) {
+		my $status = shift || 0;
+		my $out = $status ? *STDERR : *STDOUT;
+		print $out <<EOF;
+Usage: $0 [<options>] <db-instance>
+
+Exports all features in specified db-instance to GFF3 files. Each track and
+feature type will be put into a separate GFF3 file.
+EOF
+		exit $status;
+	}
+
+	my $help;
+	GetOptions(
+			'h|help' => \$help,
+			'v|verbose' => \$verbose,
+		  ) or usage(1);
+
+	$help and usage(0);
+	@ARGV == 1 or usage(2);
+	$instance = shift;
 }
 
-# Include libraries from the target instance
+### Include libraries from the target instance
 use lib "/home/fpd/deployed/$instance/CGI/tools/";
 use FPD::GFF3;
 use FPD::Config;
 use FPD::App::Gbrowse;
 
-# Connect to the database using settings in the target instance configuration
+### Connect to the database using settings in the target instance configuration
 my $gbdbh;
 FPD::Config::connection("gbrowse")->use_database_handle(sub { $gbdbh = shift; });
 my $ppdbh;
 FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 
-
+### Set up the variables
 my $THREAD_LIMIT = 5;
 # create queue of objects to be worked on
 my $workqueue = Thread::Queue->new();
@@ -98,3 +122,5 @@ sub worker {
 	}
 	return;
 }
+
+### 
