@@ -23,6 +23,11 @@ Usage: $0 [<options>] <db-instance>
 
 Exports all features in specified db-instance to GFF3 files. Each track and
 feature type will be put into a separate GFF3 file.
+
+Options:
+  -t | --threads n       run with n threads
+  -h | --help            show this help
+  -v | --verbose         show all output
 EOF
 		exit $status;
 	}
@@ -55,15 +60,17 @@ FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 ### Set up the variables
 # create queue of objects to be worked on
 my $workqueue = Thread::Queue->new();
+
 # an array of the threads. we use $THREAD_LIMIT threads.
 my @threads;
+
 # a kind-of semaphore to keep file writes atomic
 my $filelock : shared;
 
 ### Get the features to process
 { 
 	# get the features from the gbrowse database
-	my $sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup LIMIT 100;");
+	my $sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 100;");
 	$sth->execute();
 
 	while (my $row = $sth->fetchrow_hashref()) {
@@ -98,33 +105,33 @@ $_->join() for @threads;
 sub worker {
 	while (my $feature = $workqueue->dequeue_nb()) {
 		return unless $feature; # end of queue, rejoin
-		# query data for the feature
-		if ($feature->{'type'} eq "fgenesh") {
-			# do the query for fgenesh
+		
+		my $gff;
+		# TODO: for each feature type
+
+		### GFF3 features
+		if ($feature->{'type'} eq "gff3") {
+			if ($feature->{name} =~ /$\w+.(\d+)( .*)?$/) {
+				$gff = FPD::GFF3->from_db(dbid => $1);
+			} else {
+				$gff = FPD::GFF3->from_db(textid => $feature->{name});
+			}
 		}
 
-		# put it through FPD::GFF3
-#		my $gff = FPD::GFF3->new();
-#		$gff->{refseq} = undef;
-#		$gff->{start} = undef;
-#		$gff->{end} = undef;
-#		$gff->{source} = undef;
-#		$gff->{method} = undef;
-#		$gff->{strand} = undef;
-#		$gff->{score} = undef;
-#		$gff->{refseq} = undef;
-#		$gff->{refseq} = undef;
+		### INTERPRO FEATURES
+		### EXONERATE FEATURES
+		### FGENESH FEATURES
+		### BLAST FEATURES
 
 		my $filename = $feature->{type} . $feature->{track} . ".gff3";
  
 		{
 			lock $filelock; # make sure no other threads are writing
-			# open FH, ">>$filename";
-			# print FH $gff->to_text();
+			open FH, ">>$filename";
+			print FH $gff->to_text();
 			print threads->tid() . ": output $feature->{name} to $filename\n" if $verbose;
-			# close FH;
+			close FH;
 		}
-		sleep 1;
 		
 	}
 	return;
