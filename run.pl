@@ -47,15 +47,12 @@ EOF
 
 ### Include libraries from the target instance
 use lib "/home/fpd/deployed/$instance/CGI/tools/";
-use FPD::GFF3;
 use FPD::Config;
 use FPD::App::Gbrowse;
 
 ### Connect to the database using settings in the target instance configuration
 my $gbdbh;
 FPD::Config::connection("gbrowse")->use_database_handle(sub { $gbdbh = shift; });
-my $ppdbh;
-FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 
 ### Set up the variables
 # create queue of objects to be worked on
@@ -103,6 +100,12 @@ for (1 .. $threads) {
 $_->join() for @threads;
 
 sub worker {
+	require FPD::Config;
+	require FPD::GFF3;
+
+	my $ppdbh;
+	FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
+
 	while (my $feature = $workqueue->dequeue_nb()) {
 		return unless $feature; # end of queue, rejoin
 		
@@ -111,8 +114,10 @@ sub worker {
 
 		### GFF3 features
 		if ($feature->{'type'} eq "gff3") {
-			if ($feature->{name} =~ /$\w+.(\d+)( .*)?$/) {
-				$gff = FPD::GFF3->from_db(dbid => $1);
+			if ($feature->{name} =~ /^\w+.(\d+)( .*)?$/) {
+				my $sth = $ppdbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?")->execute($1);
+				my @row = $sth->fetchrow_array();
+				$gff = FPD::GFF3->from_row(\@row);
 			} else {
 				$gff = FPD::GFF3->from_db(textid => $feature->{name});
 			}
