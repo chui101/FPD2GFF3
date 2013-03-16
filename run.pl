@@ -116,8 +116,8 @@ sub worker {
 		if ($feature->{'type'} eq "gff3") {
 			if ($feature->{name} =~ /^\w+.(\d+)( .*)?$/) {
 				my $sth = $ppdbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?")->execute($1);
-				my @row = $sth->fetchrow_array();
-				$gff = FPD::GFF3->from_row(\@row);
+				my $row = $sth->fetchrow_hashref();
+				$gff = FPD::GFF3->from_row($row);
 			} else {
 				$gff = FPD::GFF3->from_db(textid => $feature->{name});
 			}
@@ -128,7 +128,9 @@ sub worker {
 		### FGENESH FEATURES
 		### BLAST FEATURES
 
-		my $filename = $feature->{type} . $feature->{track} . ".gff3";
+		my $filename = $feature->{type};
+		$filename .= "." . $feature->{track} if ($feature->{track});
+		$filename .= ".gff3";
  
 		{
 			lock $filelock; # make sure no other threads are writing
