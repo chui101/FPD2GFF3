@@ -148,25 +148,30 @@ sub worker {
 	FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 
 	while (my $feature = $workqueue->dequeue()) {
-		last if $feature->{endofqueue}; # end of queue, rejoin
+		last if $feature->{endofqueue}; # end of queue, exit the loop
 		
 		my $gff;
+
+		# get the GFF3 object based on what kind of feature we picked off the queue
+		# ship work off to a sub so we don't clutter the worker function
 		if ($feature->{'type'} eq "gff3") {
 			$gff = gff3_to_gff3($feature, $ppdbh);
-		### Exonerate alignment features
 		} elsif ($feature->{'type'} eq "exonerate") {
-		### Interpro features
+			$gff = exonerate_to_gff3($feature, $ppdbh);
 		} elsif ($feature->{'type'} eq "interpro") {
-		### BLAST alignment features
+			$gff = interpro_to_gff3($feature, $ppdbh);
 		} elsif ($feature->{'type'} eq "blast") {
-		### Fgenesh features
+			$gff = blast_to_gff3($feature,$ppdbh);
 		} elsif ($feature->{'type'} eq "fgenesh") {
+			$gff = fgenesh_to_gff3($feature,$ppdbh);
 		}
 
+		# create the appropriate file name to write to
 		my $filename = $feature->{type};
 		$filename .= "." . $feature->{dataset} if ($feature->{dataset});
 		$filename .= ".gff3";
- 
+
+		# lock file handle for writing, output gff line to file
 		{
 			lock $filelock; # make sure no other threads are writing
 			open FH, ">>$filename";
@@ -184,7 +189,7 @@ sub worker {
 
 ### GFF3 features
 sub gff3_to_gff3 {
-	my ($feature, $dbh) = shift @_;
+	my ($feature, $dbh) = @_;
 	my $gff3 = FPD::GFF3->new();
 	if ($feature->{name} =~ /^\w+\.(\d+)( .*)?$/) {
 		my $sth = $dbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?");
@@ -201,11 +206,11 @@ sub gff3_to_gff3 {
 }
 
 sub exonerate_to_gff3 {
-	my ($feature, $dbh) = shift @_;
+	my ($feature, $dbh) = @_;
 	my $gff3 = FPD::GFF3->new();
 	if ($feature->{name} =~ /^exonerate\.(\d+)/) {
 		my $dbid = $1;
-		my $sth = $ppdbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
+		my $sth = $dbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
 		$sth->execute($dbid);
 		my $row = $sth->fetchrow_hashref();
 		my %gff3hash;
@@ -281,3 +286,9 @@ sub exonerate_to_gff3 {
 	}
 	return $gff3;
 }
+
+### Interpro
+
+### BLAST
+
+### FGenesh
