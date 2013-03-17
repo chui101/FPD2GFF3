@@ -150,104 +150,11 @@ sub worker {
 	while (my $feature = $workqueue->dequeue()) {
 		last if $feature->{endofqueue}; # end of queue, rejoin
 		
-		my $gff = FPD::GFF3->new();
-		### GFF3 features
+		my $gff;
 		if ($feature->{'type'} eq "gff3") {
-			if ($feature->{name} =~ /^\w+\.(\d+)( .*)?$/) {
-				# we could just use GFF3->from_db but it's not thread safe :(
-				my $sth = $ppdbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?");
-				$sth->execute($1);
-				my $row = $sth->fetchrow_hashref();
-				$gff = FPD::GFF3->from_row($row);
-			} else {
-				my $sth = $ppdbh->prepare("select * from gff3 where text_id=?");
-				$sth->execute($feature->{name});
-				my $row = $sth->fetchrow_hashref();
-				$gff = FPD::GFF3->from_row($row);
-			}
-
-
+			$gff = gff3_to_gff3($feature, $ppdbh);
 		### Exonerate alignment features
 		} elsif ($feature->{'type'} eq "exonerate") {
-			if ($feature->{name} =~ /^exonerate\.(\d+)/) {
-				my $dbid = $1;
-				my $sth = $ppdbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
-				$sth->execute($dbid);
-				my $row = $sth->fetchrow_hashref();
-				my %gff3hash;
-
-				# vulgar format: (query id) (query start) (query end) (query strand) (target id) (target start) (target end) (target strand) (score) (CIGAR gap string)
-				# split it on the spaces so we can just shift it away
-				my @vulgar = split ' ',$row->{vulgar};
-
-				# map as many of the query/vulgar attributes to gff3 attributes as we can...
-				$gff3hash{id} = $dbid;
-				$gff3hash{phase} = '.';
-				
-				$gff3hash{source} = 'exonerate';
-				$gff3hash{method} = $row->{model};
-				$gff3hash{text_id} = "exonerate.$dbid";
-				$gff3hash{name} = shift @vulgar;
-				my $qstart = shift @vulgar; # querystart
-				my $qend = shift @vulgar; # queryend
-				my $qstrand = shift @vulgar; # querystrand
-				shift @vulgar; # target-nonformatted
-				$gff3hash{refseq} = $row->{target};
-				$gff3hash{start} = shift @vulgar; 
-				$gff3hash{end} = shift @vulgar;
-				$gff3hash{strand} = shift @vulgar;
-				$gff3hash{score} = shift @vulgar;
-				$gff3hash{geneid} = $row->{geneid};
-				# TODO: assembly/dataset/importid?
-
-				# convert CIGAR gap string to GFF3 CIGAR gapping
-				my $gap;
-				while (scalar @vulgar) {
-					my $gtype = shift @vulgar;
-					if ($gtype eq '5') {
-						# this is an intron 5' splice site. next two triplets are going to be the intron and 3' splice site
-						shift @vulgar; # burn a query strand entry
-						my $fivesplice = shift @vulgar;
-						shift @vulgar; # should be an I for intron... not interested
-						shift @vulgar; # burn a query strand entry
-						my $gapsize = shift @vulgar;
-						shift @vulgar; # should be a 3... not interested
-						shift @vulgar; # burn a query strand entry
-						my $threesplice = shift @vulgar;
-						# add the splice sites to total gap size
-						$gapsize = $gapsize + $fivesplice + $threesplice;
-						# exon is always going to be a gap in the exonerate query
-						$gap .= "D$gapsize ";
-					} elsif ($gtype eq 'G') {
-						# this is a gap I or D, representing a gap in the I=GFF3 reference/exonerate target or the D=GFF3 target/exonerate query
-						my $rgapsize = shift @vulgar;
-						my $tgapsize = shift @vulgar;
-						my $gaptype = ($rgapsize?'I':'D');
-						my $gapsize = ($rgapsize?$rgapsize:$tgapsize);
-						$gap .= "$gaptype$gapsize ";
-					} elsif ($gtype eq "I") {
-						# this is a , representing gap in GFF3 target/exonerate query
-						shift @vulgar;
-						my $gapsize = shift @vulgar;
-						$gap .= "D$gapsize ";
-					} elsif ($gtype eq "M") {
-						# a match is a match is a match
-						shift @vulgar;
-						my $gapsize = shift @vulgar;
-						$gap .= "M$gapsize ";
-					}
-				}
-				chop $gap; #remove the last space from the gapping we just made
-
-				# create the gff3 object
-				$gff = FPD::GFF3->from_row(\%gff3hash);
-
-				# set target and gap attributes in the gff3 object
-				$gff->set_attr("Target",$gff3hash{name} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
-				$gff->set_attr("Gap",$gap);
-				$gff->remove_attr("Parent");
-			}
-
 		### Interpro features
 		} elsif ($feature->{'type'} eq "interpro") {
 		### BLAST alignment features
@@ -273,4 +180,104 @@ sub worker {
 	return;
 }
 
-### 
+###
+
+### GFF3 features
+sub gff3_to_gff3 {
+	my ($feature, $dbh) = shift @_;
+	my $gff3 = FPD::GFF3->new();
+	if ($feature->{name} =~ /^\w+\.(\d+)( .*)?$/) {
+		my $sth = $dbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?");
+		$sth->execute($1);
+		my $row = $sth->fetchrow_hashref();
+		$gff3 = FPD::GFF3->from_row($row);
+	} else {
+		my $sth = $dbh->prepare("select * from gff3 where text_id=?");
+		$sth->execute($feature->{name});
+		my $row = $sth->fetchrow_hashref();
+		$gff3 = FPD::GFF3->from_row($row);
+	}
+	return $gff3;
+}
+
+sub exonerate_to_gff3 {
+	my ($feature, $dbh) = shift @_;
+	my $gff3 = FPD::GFF3->new();
+	if ($feature->{name} =~ /^exonerate\.(\d+)/) {
+		my $dbid = $1;
+		my $sth = $ppdbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
+		$sth->execute($dbid);
+		my $row = $sth->fetchrow_hashref();
+		my %gff3hash;
+
+		# vulgar format: (query id) (query start) (query end) (query strand) (target id) (target start) (target end) (target strand) (score) (CIGAR gap string)
+		# split it on the spaces so we can just shift it away
+		my @vulgar = split ' ',$row->{vulgar};
+			
+		# map as many of the query/vulgar attributes to gff3 attributes as we can...
+		$gff3hash{id} = "exonerate.$dbid";
+		$gff3hash{phase} = '.';
+		$gff3hash{source} = 'exonerate';
+		$gff3hash{method} = $row->{model};
+		$gff3hash{text_id} = "exonerate.$dbid";
+		$gff3hash{name} = shift @vulgar;
+		my $qstart = shift @vulgar; # querystart
+		my $qend = shift @vulgar; # queryend
+		my $qstrand = shift @vulgar; # querystrand
+		shift @vulgar; # target-nonformatted
+		$gff3hash{refseq} = $row->{target};
+		$gff3hash{start} = shift @vulgar; 
+		$gff3hash{end} = shift @vulgar;
+		$gff3hash{strand} = shift @vulgar;
+		$gff3hash{score} = shift @vulgar;
+		$gff3hash{geneid} = $row->{geneid};
+		# TODO: assembly/dataset/importid?
+
+		# convert CIGAR gap string to GFF3 CIGAR gapping
+		my $gap;
+		while (scalar @vulgar) {
+			my $gtype = shift @vulgar;
+			if ($gtype eq '5') {
+				# this is an intron 5' splice site. next two triplets are going to be the intron and 3' splice site
+				shift @vulgar; # burn a query strand entry
+				my $fivesplice = shift @vulgar;
+				shift @vulgar; # should be an I for intron... not interested
+				shift @vulgar; # burn a query strand entry
+				my $gapsize = shift @vulgar;
+				shift @vulgar; # should be a 3... not interested
+				shift @vulgar; # burn a query strand entry
+				my $threesplice = shift @vulgar;
+				# add the splice sites to total gap size
+				$gapsize = $gapsize + $fivesplice + $threesplice;
+				# exon is always going to be a gap in the exonerate query
+				$gap .= "D$gapsize ";
+			} elsif ($gtype eq 'G') {
+				# this is a gap I or D, representing a gap in the I=GFF3 reference/exonerate target or the D=GFF3 target/exonerate query
+				my $rgapsize = shift @vulgar;
+				my $tgapsize = shift @vulgar;
+				my $gaptype = ($rgapsize?'I':'D');
+				my $gapsize = ($rgapsize?$rgapsize:$tgapsize);
+				$gap .= "$gaptype$gapsize ";
+			} elsif ($gtype eq "I") {
+				# this is a , representing gap in GFF3 target/exonerate query
+				shift @vulgar;
+				my $gapsize = shift @vulgar;
+				$gap .= "D$gapsize ";
+			} elsif ($gtype eq "M") {
+				# a match is a match is a match
+				shift @vulgar;
+				my $gapsize = shift @vulgar;
+				$gap .= "M$gapsize ";
+			}
+		}
+
+		chop $gap; #remove the last space from the gapping we just made
+
+		# create the gff3 object
+		$gff3 = FPD::GFF3->from_row(\%gff3hash);
+		# set target and gap attributes in the gff3 object
+		$gff3->set_attr("Target",$gff3hash{name} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
+		$gff3->set_attr("Gap",$gap);
+	}
+	return $gff3;
+}
