@@ -48,15 +48,20 @@ sub fillqueue {
 sub worker {
 	require DBI;
 	DBI->import;
+
+	use lib  "/home/fpd/deployed/ef2011/CGI/tools/";
+	require FPD::GFF3;
+
+        my $dbh = DBI->connect("dbi:mysql:ef11gbrowse:localhost","plantproject","projectplant") or die;
+	
 	while (1) {
 		my $href = $workqueue->dequeue_nb();
 		print threads->tid() . ": dequeue ok\n";
 		last unless $href;
-		for (1 .. 10) {
-			$href->{foo} = $href->{hello};
-		}
+
+		print threads->tid() . ": got " . $href->{name} . "\n";
 	}
+	print threads->tid() . ": thread terminating\n";
 	return;
 }
-
 

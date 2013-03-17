@@ -3,11 +3,11 @@
 # FPD2GFF3 MAIN SCRIPT
 # This script calls the appropriate helper functions in the modules.
 
+use forks;
+use forks::shared;
 use strict;
 use warnings;
-use threads;
 use Thread::Queue;
-use threads::shared;
 
 use Getopt::Long qw(:config gnu_getopt);
 
@@ -26,7 +26,7 @@ Exports all features in specified db-instance to GFF3 files. Each track and
 feature type will be put into a separate GFF3 file.
 
 Options:
-  -t | --threads n       run with n threads
+  -t | --threads n       run with n worker threads
   -h | --help            show this help
   -v | --verbose         show all output
 EOF
@@ -47,6 +47,8 @@ EOF
 }
 ### Include libraries from the target instance
 use lib "/home/fpd/deployed/$instance/CGI/tools/";
+use FPD::Config;
+use FPD::GFF3;
 
 ### Set up the global variables
 # queue of objects to be worked on
@@ -57,13 +59,14 @@ my @threads;
 my $filelock : shared;
 
 # run the queue filler
-threads->new(\&queuefiller)->join;
+push @threads,threads->new(\&queuefiller);
+print "Thread 1 (queuefiller) created\n" if $verbose;
 
 # start the worker threads
 for (1 .. $maxthreads) {
 	my $t = threads->new(\&worker);
 	push (@threads,$t);
-	print "Thread " . $t->tid() ." created\n" if $verbose;
+	print "Thread " . $t->tid() ." (worker) created\n" if $verbose;
 }
 
 # now we twiddle our thumbs and wait for threads to finish working
@@ -77,8 +80,6 @@ exit(0);
 ### queuefiller: Get the features to process
 # get the features from the gbrowse database and give the workers tasks
 sub queuefiller {
-	require FPD::Config;
-	
 	# Connect to the database using settings in the target instance configuration
 	my $gbdbh;
 	FPD::Config::connection("gbrowse")->use_database_handle(sub { $gbdbh = shift; });
@@ -119,10 +120,7 @@ sub queuefiller {
 ### worker: decode each feature into gff3
 # for each feature queued, determine what type it is and run the appropriate conversion
 sub worker {
-	require FPD::Config;
-	require FPD::GFF3;
-
-	# our own DB handle
+	# Connect to DB using instance settings, and get our own DB handle
 	my $ppdbh;
 	FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 
