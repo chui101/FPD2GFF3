@@ -82,17 +82,39 @@ exit(0);
 sub queuefiller {
 	# Connect to the database using settings in the target instance configuration
 	my $gbdbh;
+	my $sth;
 	FPD::Config::connection("gbrowse")->use_database_handle(sub { $gbdbh = shift; });
 
-	my $sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 1000;");
+	# query for gff3, add to queue
+	$sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 1000;");
 	$sth->execute();
-
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
 		my %feature:shared;
 		$feature{name} = $row->{gname};
 		# if feature has both type and dataset then split it
-		if ($row->{gclass} =~ /(\w+):(\d+)/) {
+		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+			$feature{type} = $1;
+			$feature{dataset} = $2;
+		# otherwise the whole thing is stored
+		} else {
+			$feature{type} = $row->{gclass};
+			$feature{dataset} = "";
+		}
+
+		# enqueue the feature
+		$workqueue->enqueue(\%feature);
+	}
+
+	# query for exonerate, add to queue
+	$sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
+	$sth->execute();
+	while (my $row = $sth->fetchrow_hashref()) {
+		# for each feature, put it in the queue
+		my %feature:shared;
+		$feature{name} = $row->{gname};
+		# if feature has both type and dataset then split it
+		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
 			$feature{type} = $1;
 			$feature{dataset} = $2;
 		# otherwise the whole thing is stored
@@ -113,6 +135,7 @@ sub queuefiller {
 	}
 
 	# done filling, return
+	print "Thread " . threads->tid() . " (queuefiller) done.\n" if $verbose;
 	return;
 }
 
@@ -125,9 +148,9 @@ sub worker {
 	FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
 
 	while (my $feature = $workqueue->dequeue()) {
-		return if $feature->{endofqueue}; # end of queue, rejoin
+		last if $feature->{endofqueue}; # end of queue, rejoin
 		
-		my $gff;
+		my $gff = FPD::GFF3->new();
 		### GFF3 features
 		if ($feature->{'type'} eq "gff3") {
 			if ($feature->{name} =~ /^\w+\.(\d+)( .*)?$/) {
@@ -154,17 +177,17 @@ sub worker {
 				my %gff3hash;
 
 				# vulgar format: (query id) (query start) (query end) (query strand) (target id) (target start) (target end) (target strand) (score) (CIGAR gap string)
+				# split it on the spaces so we can just shift it away
+				my @vulgar = split ' ',$row->{vulgar};
 
-				@vulgar = split ' ',$row->{vulgar};
-
-				# map all the vulgar attributes to gff3 attributes
-
+				# map as many of the query/vulgar attributes to gff3 attributes as we can...
 				$gff3hash{id} = $dbid;
-				$gff3hash{phase} = 0;
+				$gff3hash{phase} = '.';
+				
 				$gff3hash{source} = 'exonerate';
 				$gff3hash{method} = $row->{model};
-				$gff3hash{text_id} = shift @vulgar;
-				$gff3hash{name} = $gff3hash{text_id};
+				$gff3hash{text_id} = "exonerate.$dbid";
+				$gff3hash{name} = shift @vulgar;
 				my $qstart = shift @vulgar; # querystart
 				my $qend = shift @vulgar; # queryend
 				my $qstrand = shift @vulgar; # querystrand
@@ -181,30 +204,48 @@ sub worker {
 				my $gap;
 				while (scalar @vulgar) {
 					my $gtype = shift @vulgar;
-					if (($gtype eq '5') or ($gtype eq '3')) {
-						# this is an intron. next two triplets are going to be the intron and 3' splice site (or 5' if - strand)
-						shift @vulgar;
+					if ($gtype eq '5') {
+						# this is an intron 5' splice site. next two triplets are going to be the intron and 3' splice site
+						shift @vulgar; # burn a query strand entry
 						my $fivesplice = shift @vulgar;
-						my $gaptype = shift @vulgar;
-						shift @vulgar;
+						shift @vulgar; # should be an I for intron... not interested
+						shift @vulgar; # burn a query strand entry
 						my $gapsize = shift @vulgar;
-						shift @vulgar; # should be a 3 or 5
-						shift @vulgar;
+						shift @vulgar; # should be a 3... not interested
+						shift @vulgar; # burn a query strand entry
 						my $threesplice = shift @vulgar;
+						# add the splice sites to total gap size
 						$gapsize = $gapsize + $fivesplice + $threesplice;
+						# exon is always going to be a gap in the exonerate query
+						$gap .= "D$gapsize ";
+					} elsif ($gtype eq 'G') {
+						# this is a gap I or D, representing a gap in the I=GFF3 reference/exonerate target or the D=GFF3 target/exonerate query
+						my $rgapsize = shift @vulgar;
+						my $tgapsize = shift @vulgar;
+						my $gaptype = ($rgapsize?'I':'D');
+						my $gapsize = ($rgapsize?$rgapsize:$tgapsize);
 						$gap .= "$gaptype$gapsize ";
-					} else {
-						# we just copy the "target" (gff3 "reference") part
+					} elsif ($gtype eq "I") {
+						# this is a , representing gap in GFF3 target/exonerate query
 						shift @vulgar;
 						my $gapsize = shift @vulgar;
-						$gap .= "$gtype$gapsize ";
+						$gap .= "D$gapsize ";
+					} elsif ($gtype eq "M") {
+						# a match is a match is a match
+						shift @vulgar;
+						my $gapsize = shift @vulgar;
+						$gap .= "M$gapsize ";
 					}
 				}
+				chop $gap; #remove the last space from the gapping we just made
+
 				# create the gff3 object
 				$gff = FPD::GFF3->from_row(\%gff3hash);
+
 				# set target and gap attributes in the gff3 object
-				$gff->set_attr("Target",$gff3hash{text_id} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
+				$gff->set_attr("Target",$gff3hash{name} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
 				$gff->set_attr("Gap",$gap);
+				$gff->remove_attr("Parent");
 			}
 
 		### Interpro features
@@ -216,7 +257,7 @@ sub worker {
 		}
 
 		my $filename = $feature->{type};
-		$filename .= "." . $feature->{track} if ($feature->{track});
+		$filename .= "." . $feature->{dataset} if ($feature->{dataset});
 		$filename .= ".gff3";
  
 		{
@@ -228,6 +269,7 @@ sub worker {
 		}
 		
 	}
+	print "Worker " . threads->tid() . " done\n" if $verbose;
 	return;
 }
 
