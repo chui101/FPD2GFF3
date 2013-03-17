@@ -12,7 +12,7 @@ my @workers;
 
 my $num_workers = 30;
 
-fillqueue();
+threads->new(\&fillqueue)->join();
 
 for (1 .. $num_workers) {
 	push @workers, threads->new(\&worker);
@@ -22,10 +22,23 @@ $_->join() for @workers;
 
 
 sub fillqueue {
-	for (1 .. 1000) {
+	require DBI;
+	DBI->import;
+
+	my $dbh = DBI->connect("dbi:mysql:ef11gbrowse:localhost","plantproject","projectplant") or die;
+	my $sth = $dbh->prepare("select gclass, gname from fgroup where gclass like 'gff3%' limit 100");
+	$sth->execute();
+
+	while (my $row = $sth->fetchrow_hashref()) {
 		my %data:shared;
-		$data{foo} = 'bar';
-		$data{hello} = 'world';
+		$data{name} = $row->{gname};
+		if ($row->{gclass} =~ /(\w+):(\d+)/) {
+			$data{type} = $1;
+			$data{dataset} = $2;
+		} else {
+			$data{type} = $row->{gclass};
+			$data{dataset} = "";
+		}
 		$workqueue->enqueue(\%data);
 	}
 	return;
