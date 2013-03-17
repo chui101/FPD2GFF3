@@ -91,14 +91,14 @@ sub queuefiller {
 		# for each feature, put it in the queue
 		my %feature:shared;
 		$feature{name} = $row->{gname};
-		# if feature has both type and track number (?) then split it
+		# if feature has both type and dataset then split it
 		if ($row->{gclass} =~ /(\w+):(\d+)/) {
 			$feature{type} = $1;
-			$feature{track} = $2;
+			$feature{dataset} = $2;
 		# otherwise the whole thing is stored
 		} else {
 			$feature{type} = $row->{gclass};
-			$feature{track} = "";
+			$feature{dataset} = "";
 		}
 
 		# enqueue the feature
@@ -130,17 +130,83 @@ sub worker {
 		my $gff;
 		### GFF3 features
 		if ($feature->{'type'} eq "gff3") {
-			if ($feature->{name} =~ /^\w+.(\d+)( .*)?$/) {
+			if ($feature->{name} =~ /^\w+\.(\d+)( .*)?$/) {
 				# we could just use GFF3->from_db but it's not thread safe :(
 				my $sth = $ppdbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?");
 				$sth->execute($1);
 				my $row = $sth->fetchrow_hashref();
 				$gff = FPD::GFF3->from_row($row);
 			} else {
-				$gff = FPD::GFF3->from_db(textid => $feature->{name});
+				my $sth = $ppdbh->prepare("select * from gff3 where text_id=?");
+				$sth->execute($feature->{name});
+				my $row = $sth->fetchrow_hashref();
+				$gff = FPD::GFF3->from_row($row);
 			}
+
+
 		### Exonerate alignment features
 		} elsif ($feature->{'type'} eq "exonerate") {
+			if ($feature->{name} =~ /^exonerate\.(\d+)/) {
+				my $dbid = $1;
+				my $sth = $ppdbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
+				$sth->execute($dbid);
+				my $row = $sth->fetchrow_hashref();
+				my %gff3hash;
+
+				# vulgar format: (query id) (query start) (query end) (query strand) (target id) (target start) (target end) (target strand) (score) (CIGAR gap string)
+
+				@vulgar = split ' ',$row->{vulgar};
+
+				# map all the vulgar attributes to gff3 attributes
+
+				$gff3hash{id} = $dbid;
+				$gff3hash{phase} = 0;
+				$gff3hash{source} = 'exonerate';
+				$gff3hash{method} = $row->{model};
+				$gff3hash{text_id} = shift @vulgar;
+				$gff3hash{name} = $gff3hash{text_id};
+				my $qstart = shift @vulgar; # querystart
+				my $qend = shift @vulgar; # queryend
+				my $qstrand = shift @vulgar; # querystrand
+				shift @vulgar; # target-nonformatted
+				$gff3hash{refseq} = $row->{target};
+				$gff3hash{start} = shift @vulgar; 
+				$gff3hash{end} = shift @vulgar;
+				$gff3hash{strand} = shift @vulgar;
+				$gff3hash{score} = shift @vulgar;
+				$gff3hash{geneid} = $row->{geneid};
+				# TODO: assembly/dataset/importid?
+
+				# convert CIGAR gap string to GFF3 CIGAR gapping
+				my $gap;
+				while (scalar @vulgar) {
+					my $gtype = shift @vulgar;
+					if (($gtype eq '5') or ($gtype eq '3')) {
+						# this is an intron. next two triplets are going to be the intron and 3' splice site (or 5' if - strand)
+						shift @vulgar;
+						my $fivesplice = shift @vulgar;
+						my $gaptype = shift @vulgar;
+						shift @vulgar;
+						my $gapsize = shift @vulgar;
+						shift @vulgar; # should be a 3 or 5
+						shift @vulgar;
+						my $threesplice = shift @vulgar;
+						$gapsize = $gapsize + $fivesplice + $threesplice;
+						$gap .= "$gaptype$gapsize ";
+					} else {
+						# we just copy the "target" (gff3 "reference") part
+						shift @vulgar;
+						my $gapsize = shift @vulgar;
+						$gap .= "$gtype$gapsize ";
+					}
+				}
+				# create the gff3 object
+				$gff = FPD::GFF3->from_row(\%gff3hash);
+				# set target and gap attributes in the gff3 object
+				$gff->set_attr("Target",$gff3hash{text_id} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
+				$gff->set_attr("Gap",$gap);
+			}
+
 		### Interpro features
 		} elsif ($feature->{'type'} eq "interpro") {
 		### BLAST alignment features
