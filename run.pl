@@ -58,16 +58,17 @@ my @threads;
 # kind-of mutex to keep file writes atomic
 my $filelock : shared;
 
-# run the queue filler
-push @threads,threads->new(\&queuefiller);
-print "Thread 1 (queuefiller) created\n" if $verbose;
-
 # start the worker threads
 for (1 .. $maxthreads) {
 	my $t = threads->new(\&worker);
 	push (@threads,$t);
 	print "Thread " . $t->tid() ." (worker) created\n" if $verbose;
 }
+
+# run the queue filler
+my $qf = threads->new(\&queuefiller);
+push @threads,$qf;
+print "Thread ".$qf->tid()." (queuefiller) created\n" if $verbose;
 
 # now we twiddle our thumbs and wait for threads to finish working
 $_->join() for @threads;
@@ -205,6 +206,7 @@ sub gff3_to_gff3 {
 	return $gff3;
 }
 
+### Exonerate alignments
 sub exonerate_to_gff3 {
 	my ($feature, $dbh) = @_;
 	my $gff3 = FPD::GFF3->new();
@@ -284,11 +286,34 @@ sub exonerate_to_gff3 {
 		$gff3->set_attr("Target",$gff3hash{name} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
 		$gff3->set_attr("Gap",$gap);
 	}
+	#TODO: what if it doesn't match the pattern?
 	return $gff3;
 }
 
-### Interpro
+### Interpro features
+# interpro is a bit different. each feature can have multiple database entries (for different parts of the feature). remember to loop through all of them...
+sub interpro_to_gff3 {
+	my ($feature,$dbh) = @_;
+	my $gff3 = FPD::GFF3->new();
+	if ($feature->{name} =~ /^ipr\.(\d+)\.(\d+)/) {
+		my $runid = $1;
+		my $resultid = $2;
+		my $sth = $dbh->prepare("select ");
+	}
+# select m.id, m.resultid, r.runid, m.ord, m.name, m.dbname, m.dbid, l.start, l.end from ip_matches m inner join ip_results as r on r.id = m.resultid inner join ip_locations as l on l.matchid = m.id where r.runid=?;
+# convert to contig coordinates
+# need the referenced ORF... ip_link?
+	
+}
 
-### BLAST
 
-### FGenesh
+### BLAST alignments
+sub blast_to_gff3 {
+	my ($feature, $dbh) = @_;
+	my $gff3;
+}
+
+### FGenesh features
+sub fgenesh_to_gff3 {
+}
+
