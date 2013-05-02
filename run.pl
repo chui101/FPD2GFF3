@@ -3,11 +3,13 @@
 # FPD2GFF3 MAIN SCRIPT
 # This script calls the appropriate helper functions in the modules.
 
-use forks;
-use forks::shared;
+use threads;
+use threads::shared;
 use strict;
 use warnings;
 use Thread::Queue;
+require "GFF3Object.pm";
+
 
 use Getopt::Long qw(:config gnu_getopt);
 
@@ -45,10 +47,22 @@ EOF
 	$maxthreads or $maxthreads = 4;
 	$instance = shift;
 }
-### Include libraries from the target instance
-use lib "/home/fpd/deployed/$instance/CGI/tools/";
-use FPD::Config;
-use FPD::GFF3;
+# Read configuration in FPD/Config without 'use' (so we remain thread-safe)
+
+my $gbdb:shared;
+my $fpdb:shared;
+my $db_host:shared;
+
+open (FH, "<", "/home/fpd/deployed/$instance/CGI/tools/FPD/Config.pm") or die "Cannot open configuration for instance $instance!";
+while (<FH>) {
+	if ($_ =~ /my \$PP_DB = \"(.+)\"/) {$fpdb = $1;}
+	if ($_ =~ /my \$GB_DB = \"(.+)\"/) {$gbdb = $1;}
+	if ($_ =~ /my \$GB_HOST = \"(.+)\"/) {$db_host = $1;}
+}
+# assume we're running on csbio-l
+$db_host = "localhost";
+$verbose and print "using databases $fpdb and $gbdb on $db_host\n";
+close FH;
 
 ### Set up the global variables
 # queue of objects to be worked on
@@ -82,12 +96,13 @@ exit(0);
 # get the features from the gbrowse database and give the workers tasks
 sub queuefiller {
 	# Connect to the database using settings in the target instance configuration
-	my $gbdbh;
-	my $sth;
-	FPD::Config::connection("gbrowse")->use_database_handle(sub { $gbdbh = shift; });
+	require DBI;
+	DBI->import;
+
+	my $dbh = DBI->connect("dbi:mysql:$gbdb:$db_host","plantproject","projectplant") or die;
 
 	# query for gff3, add to queue
-	$sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 1000;");
+	my $sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 1000;");
 	$sth->execute();
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
@@ -108,7 +123,7 @@ sub queuefiller {
 	}
 
 	# query for exonerate, add to queue
-	$sth = $gbdbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
+	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
 	$sth->execute();
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
@@ -145,8 +160,9 @@ sub queuefiller {
 # for each feature queued, determine what type it is and run the appropriate conversion
 sub worker {
 	# Connect to DB using instance settings, and get our own DB handle
-	my $ppdbh;
-	FPD::Config::connection("pp")->use_database_handle(sub { $ppdbh = shift; });
+	require DBI;
+	DBI->import;
+        my $ppdbh = DBI->connect("dbi:mysql:$fpdb:$db_host","plantproject","projectplant") or die;
 
 	while (my $feature = $workqueue->dequeue()) {
 		last if $feature->{endofqueue}; # end of queue, exit the loop
@@ -191,17 +207,17 @@ sub worker {
 ### GFF3 features
 sub gff3_to_gff3 {
 	my ($feature, $dbh) = @_;
-	my $gff3 = FPD::GFF3->new();
+	my $gff3 = GFF3Object->new();
 	if ($feature->{name} =~ /^\w+\.(\d+)( .*)?$/) {
 		my $sth = $dbh->prepare("select gff3.*, geneid from gff3 left join gff3gene on gffid = gff3.id where id=?");
 		$sth->execute($1);
 		my $row = $sth->fetchrow_hashref();
-		$gff3 = FPD::GFF3->from_row($row);
+		$gff3 = GFF3Object->from_hash($row);
 	} else {
 		my $sth = $dbh->prepare("select * from gff3 where text_id=?");
 		$sth->execute($feature->{name});
 		my $row = $sth->fetchrow_hashref();
-		$gff3 = FPD::GFF3->from_row($row);
+		$gff3 = GFF3Object->from_hash($row);
 	}
 	return $gff3;
 }
@@ -209,7 +225,7 @@ sub gff3_to_gff3 {
 ### Exonerate alignments
 sub exonerate_to_gff3 {
 	my ($feature, $dbh) = @_;
-	my $gff3 = FPD::GFF3->new();
+	my $gff3 = GFF3Object->new();
 	if ($feature->{name} =~ /^exonerate\.(\d+)/) {
 		my $dbid = $1;
 		my $sth = $dbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
@@ -281,7 +297,7 @@ sub exonerate_to_gff3 {
 		chop $gap; #remove the last space from the gapping we just made
 
 		# create the gff3 object
-		$gff3 = FPD::GFF3->from_row(\%gff3hash);
+		$gff3 = GFF3Object->from_hash(\%gff3hash);
 		# set target and gap attributes in the gff3 object
 		$gff3->set_attr("Target",$gff3hash{name} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
 		$gff3->set_attr("Gap",$gap);
@@ -294,7 +310,7 @@ sub exonerate_to_gff3 {
 # interpro is a bit different. each feature can have multiple database entries (for different parts of the feature). remember to loop through all of them...
 sub interpro_to_gff3 {
 	my ($feature,$dbh) = @_;
-	my $gff3 = FPD::GFF3->new();
+	my $gff3 = GFF3Object->new();
 	if ($feature->{name} =~ /^ipr\.(\d+)\.(\d+)/) {
 		my $runid = $1;
 		my $resultid = $2;
