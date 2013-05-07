@@ -442,10 +442,10 @@ sub add_child {
 	my $child = shift;
 	
 	# link child back to us
-	$child->set_attr("parent", $self->{text_id});
+	$child->set_attr(Parent => $self->{text_id});
 
 	# add child to our list
-	push @{$self->children}, $child;
+	push @{$self->{children}}, $child;
 
 	return $self;
 }

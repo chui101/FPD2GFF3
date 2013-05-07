@@ -71,6 +71,7 @@ my $workqueue = Thread::Queue->new();
 my @threads;
 # kind-of mutex to keep file writes atomic
 my $filelock : shared;
+my %seen_query : shared;
 
 # start the worker threads
 for (1 .. $maxthreads) {
@@ -192,7 +193,7 @@ sub worker {
 		{
 			lock $filelock; # make sure no other threads are writing
 			open FH, ">>$filename";
-			print FH $gff->to_text();
+			print FH $gff->to_text(1);
 			print threads->tid() . ": output $feature->{name} to $filename\n" if $verbose;
 			close FH;
 		}
@@ -225,85 +226,123 @@ sub gff3_to_gff3 {
 ### Exonerate alignments
 sub exonerate_to_gff3 {
 	my ($feature, $dbh) = @_;
-	my $gff3 = GFF3Object->new();
+	my ($vulgar, $local_start, $realquery, $model);
 	if ($feature->{name} =~ /^exonerate\.(\d+)/) {
 		my $dbid = $1;
-		my $sth = $dbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
+		my $sth = $dbh->prepare("select exonerate.target as target,exonerate.vulgar as vulgar, exonerate.model as model, exongene.geneid as geneid, exonerate.query as query from exonerate join exongene on exonerate.entryid = exongene.entryid where exonerate.entryid=?");
 		$sth->execute($dbid);
 		my $row = $sth->fetchrow_hashref();
-		my %gff3hash;
+		($vulgar, $local_start, $realquery, $model) = ($row->{vulgar},1,$row->{query},$row->{model});
+	} else { 
+		warn "bad feature: " . $feature->{name} . "\n";
+		return;
+	}
+	my (
+		$query, $qst, $qend, $qstrand,
+		$target, $tst, $tend, $tstrand,
+		$score, $alignment
+	) = ($vulgar =~ /
+		^(\S+)\s+(\d+)\s+(\d+)\s+([+-.])\s+
+		 (\S+)\s+(\d+)\s+(\d+)\s+([+-])\s+
+		 (\d+)\s+(.*)
+		/x
+	);
+	$query = $realquery if defined $realquery;
+	if (defined $local_start) {
+		$tst += ($local_start - 1);
+		$tend += ($local_start - 1);
+	}
+	# print STDERR ">>> q $query:$qst..$qend  t $target:$tst..$tend  s $score\n";
+	my $gid = $query;
+	$gid =~ s/ /_/g;
+	$query =~ /GI=([^|]+)/ and $gid = $1;
+	# $query =~ /LOCUS=([^|]+)/ and $gid = $1;  # Locus can be too long
+	$query =~ /ACCESSION=([^|]+)/ and $gid = $1;
+	$query =~ /PROTEIN_ID=([^|]+)/ and $gid = $1;
+	$query =~ /^([A-Z]+\d+(?:\.\d+)?)\s/ and $gid = $1; # Starts with an ID
+	++$seen_query{$gid};
+	my $geneid = "$gid:match:$seen_query{$gid}";
+	defined $alignment or die "bad line '$vulgar'";
+	my $qsign = ($qstrand eq '-') ? -1 : 1;
+	my $tsign = ($tstrand eq '-') ? -1 : 1;
 
-		# vulgar format: (query id) (query start) (query end) (query strand) (target id) (target start) (target end) (target strand) (score) (CIGAR gap string)
-		# split it on the spaces so we can just shift it away
-		my @vulgar = split ' ',$row->{vulgar};
-			
-		# map as many of the query/vulgar attributes to gff3 attributes as we can...
-		$gff3hash{id} = "exonerate.$dbid";
-		$gff3hash{phase} = '.';
-		$gff3hash{source} = 'exonerate';
-		$gff3hash{method} = $row->{model};
-		$gff3hash{text_id} = "exonerate.$dbid";
-		$gff3hash{name} = shift @vulgar;
-		my $qstart = shift @vulgar; # querystart
-		my $qend = shift @vulgar; # queryend
-		my $qstrand = shift @vulgar; # querystrand
-		shift @vulgar; # target-nonformatted
-		$gff3hash{refseq} = $row->{target};
-		$gff3hash{start} = shift @vulgar; 
-		$gff3hash{end} = shift @vulgar;
-		$gff3hash{strand} = shift @vulgar;
-		$gff3hash{score} = shift @vulgar;
-		$gff3hash{geneid} = $row->{geneid};
-		# TODO: assembly/dataset/importid?
+	my $currpos = $tst;
+	# the smaller end of the range is 'off by one', because exonerate
+	# reports position between bases (0 means 'just before the first
+	# base', 1 'just after the first base').
+	++$currpos if $tstrand eq '+';
 
-		# convert CIGAR gap string to GFF3 CIGAR gapping
-		my $gap;
-		while (scalar @vulgar) {
-			my $gtype = shift @vulgar;
-			if ($gtype eq '5') {
-				# this is an intron 5' splice site. next two triplets are going to be the intron and 3' splice site
-				shift @vulgar; # burn a query strand entry
-				my $fivesplice = shift @vulgar;
-				shift @vulgar; # should be an I for intron... not interested
-				shift @vulgar; # burn a query strand entry
-				my $gapsize = shift @vulgar;
-				shift @vulgar; # should be a 3... not interested
-				shift @vulgar; # burn a query strand entry
-				my $threesplice = shift @vulgar;
-				# add the splice sites to total gap size
-				$gapsize = $gapsize + $fivesplice + $threesplice;
-				# exon is always going to be a gap in the exonerate query
-				$gap .= "D$gapsize ";
-			} elsif ($gtype eq 'G') {
-				# this is a gap I or D, representing a gap in the I=GFF3 reference/exonerate target or the D=GFF3 target/exonerate query
-				my $rgapsize = shift @vulgar;
-				my $tgapsize = shift @vulgar;
-				my $gaptype = ($rgapsize?'I':'D');
-				my $gapsize = ($rgapsize?$rgapsize:$tgapsize);
-				$gap .= "$gaptype$gapsize ";
-			} elsif ($gtype eq "I") {
-				# this is a , representing gap in GFF3 target/exonerate query
-				shift @vulgar;
-				my $gapsize = shift @vulgar;
-				$gap .= "D$gapsize ";
-			} elsif ($gtype eq "M") {
-				# a match is a match is a match
-				shift @vulgar;
-				my $gapsize = shift @vulgar;
-				$gap .= "M$gapsize ";
+
+	my $genegff = new GFF3Object;
+	$genegff->{refseq} = $target;
+	$genegff->{start} = $tsign < 0 ? $tend+1 : $tst+1;
+	$genegff->{end} = $tsign < 0 ? $tst : $tend;
+	$genegff->{source} = "$model";
+	$genegff->{method} = ($model =~ /protein/) ? "protein_match" : "expressed_sequence_match";
+	$genegff->{strand} = $tstrand;
+	$genegff->{score} = $score;
+
+	my $encquery = $query;
+	$encquery =~ s/ /%20/g;	
+
+	$genegff->set_attr(Target => sprintf(
+			"%s %d %d %s", $encquery,
+			$qsign < 0 ? $qend+1 : $qst + 1,
+			$qsign < 0 ? $qst : $qend,
+			$qstrand
+		)
+	);
+	
+	$genegff->{end} = $tsign < 0 ? $tst : $tend;
+
+	$genegff->set_attr(Name => $query);
+	$genegff->set_attr(ID => $geneid);
+	$genegff->set_attr(vulgar => $alignment);
+
+	my $currgff = undef;
+	my $ino = 0;
+	my $eno = 0;
+
+	while ($alignment =~ s/^\s*(\S+) (\d+) (\d+)//) {
+		my ($type, $qlen, $tlen) = ($1,$2,$3);
+
+		if ($type =~ /[IF53N]/) {
+			# Intron, frame shift, or non-equivalenced region
+			if (defined $currgff and $currgff->{method} ne "intron") {
+				if($tsign < 0) {
+					($currgff->{end}, $currgff->{start}) = ($currgff->{start}, $currgff->{end});
+				}
+				#print $currgff->to_text();
+				$currgff = undef;
 			}
+		} elsif ($type =~ /[MCGS]/) {
+			# Part of an exon
+			$currgff = new GFF3Object;
+			$currgff->{refseq} = $target;
+			$currgff->{start} = $currpos;
+			$currgff->{source} = $model;
+			$currgff->{method} = "match_part";
+			$currgff->{strand} = $genegff->{strand};
+			$currgff->set_attr(ID => "$geneid:exon:" . ++$eno);
+			#$currgff->set_attr(Parent => $geneid);
+			$currgff->{end} = $currpos + $tsign*($tlen-1);
+			# add the created feature to the list of children
+			$genegff->add_child($currgff);
+		} else {
+			warn "Unknown type '$type' in $query:$target";
 		}
 
-		chop $gap; #remove the last space from the gapping we just made
-
-		# create the gff3 object
-		$gff3 = GFF3Object->from_hash(\%gff3hash);
-		# set target and gap attributes in the gff3 object
-		$gff3->set_attr("Target",$gff3hash{name} . " $qstart $qend $qstrand"); #gff3 target attribute -> exonerate query
-		$gff3->set_attr("Gap",$gap);
+		$currpos += $tsign * $tlen;
 	}
-	#TODO: what if it doesn't match the pattern?
-	return $gff3;
+	if (defined $currgff) {
+		if($tsign < 0) {
+			($currgff->{end}, $currgff->{start}) = ($currgff->{start}, $currgff->{end});
+		}
+		#print $currgff->to_text();
+	} else {
+		warn "3' splice junction without following exon\nin $query:$target\n";
+	}
+	return $genegff;
 }
 
 ### Interpro features
