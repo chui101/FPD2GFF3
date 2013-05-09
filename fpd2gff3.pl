@@ -123,6 +123,27 @@ sub queuefiller {
 		$workqueue->enqueue(\%feature);
 	}
 
+	# query for fgenesh, add to queue
+	my $sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
+	$sth->execute();
+	while (my $row = $sth->fetchrow_hashref()) {
+		# for each feature, put it in the queue
+		my %feature:shared;
+		$feature{name} = $row->{gname};
+		# if feature has both type and dataset then split it
+		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+			$feature{type} = $1;
+			$feature{dataset} = $2;
+		# otherwise the whole thing is stored
+		} else {
+			$feature{type} = $row->{gclass};
+			$feature{dataset} = "";
+		}
+
+		# enqueue the feature
+		$workqueue->enqueue(\%feature);
+	}
+
 	# query for exonerate, add to queue
 	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
 	$sth->execute();
@@ -377,10 +398,11 @@ sub fgenesh_to_gff3 {
 	my ($geneid, $runid) = ($feature->{name} =~ /^A\.(\d+)\.(\d+)/);
 	
 	# get contig ID for run
-	$sth = $dbh->prepare("select c.name from c join fgenesh on fgenesh.contigid = c.id where runid = ?");
+	$sth = $dbh->prepare("select c.name,fgenesh.score from c join fgenesh on fgenesh.contigid = c.id where runid = ?");
 	$sth->execute($runid);
-	my ($contig) = $sth->fetchrow_array();
+	my ($contig,$score) = $sth->fetchrow_array();
 	$contig = sprintf("contig%05d",$contig); #zero pad
+	$score = 0 unless $score;
 
 	# get bounds on gene and mrna, also get strand
 	$sth = $dbh->prepare("select least(min(start),min(end)),greatest(max(start),max(end)),strain from fgenedata where runid = ? and genenumber = ?");
@@ -393,28 +415,63 @@ sub fgenesh_to_gff3 {
 
 	# set up new GFF3 Objects for gene and populate info
 	my $gff = new GFF3Object;
-	#TODO
+	$gff->set_attr(ID => $feature->{name});
+	$gff->set_attr(name => $feature->{name});
+	$gff->set_attr(refseq => $contig);
+	$gff->set_attr(source => "fgenesh");
+	$gff->set_attr(method => "primary_transcript");
+	$gff->set_attr(start => $genestart);
+	$gff->set_attr(end => $geneend);
+	$gff->set_attr(score => $score);
 	
 	# set up GFF3Object for TSS and populate info if it exists
 	$sth = $dbh->prepare("select score,start from fgenedata where runid = ? and genenumber = ? and feature = 'TSS'");
 	$sth->execute($runid,$geneid);
 	if (my @row = $sth->fetchrow_array()) {
 		my $tss = new GFF3Object;
-		#TODO
+		$tss->set_attr(ID => $feature->{name}.":TSS");
+		$tss->set_attr(name => $feature->{name}.":TSS");
+		$tss->set_attr(refseq => $contig);
+		$tss->set_attr(source => "fgenesh");
+		$tss->set_attr(method => "TSS");
+		$tss->set_attr(start => $row[1]);
+		$tss->set_attr(end => $row[1]);
+		$tss->set_attr(score => $row[0]);
 		$gff->add_child($tss);
 	}
 
 	# set up GFF3Object for mRNA part
 	my $mrna = new GFF3Object;
-	#TODO
+	$mrna->set_attr(ID => $feature->{name}.":mRNA");
+	$mrna->set_attr(name => $feature->{name}.":mRNA");
+	$mrna->set_attr(refseq => $contig);
+	$mrna->set_attr(source => "fgenesh");
+	$mrna->set_attr(method => "primary_transcript_region");
+	$mrna->set_attr(start => $genestart);
+	$mrna->set_attr(end => $geneend);
+	$mrna->set_attr(score => $score);
 	$gff->add_child($mrna);
 
 	# get and loop through CDSes
-	$sth = $dbh->prepare("select start,end,score,feature from fgenedata where runid = ? and genenumber = ? and entrypos > 0");
+	$sth = $dbh->prepare("select start,end,score,feature,entrypos from fgenedata where runid = ? and genenumber = ? and entrypos > 0");
 	$sth->execute($runid,$geneid);
+	my $last_len = 0;
+	my $last_phase = 0;
 	while (my @row = $sth->fetchrow_array()) {
 		my $cds = new GFF3Object;
-		#TODO
+		$cds->set_attr(ID => $feature->{name}.":exon".$row[4].":".$row[3]);
+		$cds->set_attr(name => $feature->{name}.":exon".$row[4].":".$row[3]);
+		$cds->set_attr(refseq => $contig);
+		$cds->set_attr(source => "fgenesh");
+		$cds->set_attr(method => "exon");
+		$cds->set_attr(start => $row[0]);
+		$cds->set_attr(end => $row[1]);
+		$cds->set_attr(score => $row[2]?$row[2]:0);
+		#TODO: calculate phase
+		my $phase = ($last_phase - $last_len) % 3;
+		$last_len = $row[1] - $row[0] + 1;
+		$last_phase = $phase;
+		$cds->set_attr(phase => $phase);
 		$mrna->add_child($cds);
 	}
 	
@@ -423,7 +480,14 @@ sub fgenesh_to_gff3 {
 	$sth->execute($runid,$geneid);
 	if (my @row = $sth->fetchrow_array()) {
 		my $tes = new GFF3Object;
-		#TODO
+		$tes->set_attr(ID => $feature->{name}.":transcription_end_site");
+		$tes->set_attr(name => $feature->{name}.":transcription_end_site");
+		$tes->set_attr(refseq => $contig);
+		$tes->set_attr(source => "fgenesh");
+		$tes->set_attr(method => "transcription_end_site");
+		$tes->set_attr(start => $row[1]);
+		$tes->set_attr(end => $row[1]);
+		$tes->set_attr(score => $row[0]);
 		$gff->add_child($tes);
 	}
 
