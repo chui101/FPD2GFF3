@@ -370,5 +370,62 @@ sub blast_to_gff3 {
 
 ### FGenesh features
 sub fgenesh_to_gff3 {
-}
+	my ($feature,$dbh) = @_;
+	my $sth;
 
+	# extract gene id and run id from feature name
+	my ($geneid, $runid) = ($feature->{name} =~ /^A\.(\d+)\.(\d+)/);
+	
+	# get contig ID for run
+	$sth = $dbh->prepare("select c.name from c join fgenesh on fgenesh.contigid = c.id where runid = ?");
+	$sth->execute($runid);
+	my ($contig) = $sth->fetchrow_array();
+	$contig = sprintf("contig%05d",$contig); #zero pad
+
+	# get bounds on gene and mrna, also get strand
+	$sth = $dbh->prepare("select least(min(start),min(end)),greatest(max(start),max(end)),strain from fgenedata where runid = ? and genenumber = ?");
+	$sth->execute($runid,$geneid);
+	my ($genestart, $geneend, $strand) = $sth->fetchrow_array();
+
+	$sth = $dbh->prepare("select least(min(start),min(end)),greatest(max(start),max(end)) from fgenedata where runid = ? and genenumber = ? and entrypos > 0");
+	$sth->execute($runid,$geneid);
+	my ($mrnastart, $mrnaend) = $sth->fetchrow_array();
+
+	# set up new GFF3 Objects for gene and populate info
+	my $gff = new GFF3Object;
+	#TODO
+	
+	# set up GFF3Object for TSS and populate info if it exists
+	$sth = $dbh->prepare("select score,start from fgenedata where runid = ? and genenumber = ? and feature = 'TSS'");
+	$sth->execute($runid,$geneid);
+	if (my @row = $sth->fetchrow_array()) {
+		my $tss = new GFF3Object;
+		#TODO
+		$gff->add_child($tss);
+	}
+
+	# set up GFF3Object for mRNA part
+	my $mrna = new GFF3Object;
+	#TODO
+	$gff->add_child($mrna);
+
+	# get and loop through CDSes
+	$sth = $dbh->prepare("select start,end,score,feature from fgenedata where runid = ? and genenumber = ? and entrypos > 0");
+	$sth->execute($runid,$geneid);
+	while (my @row = $sth->fetchrow_array()) {
+		my $cds = new GFF3Object;
+		#TODO
+		$mrna->add_child($cds);
+	}
+	
+	# set up TES	
+	$sth = $dbh->prepare("select score,start from fgenedata where runid = ? and genenumber = ? and feature = 'PolA'");
+	$sth->execute($runid,$geneid);
+	if (my @row = $sth->fetchrow_array()) {
+		my $tes = new GFF3Object;
+		#TODO
+		$gff->add_child($tes);
+	}
+
+	return $gff;
+}
