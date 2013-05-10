@@ -402,13 +402,10 @@ sub from_hash {
 	return $self;
 }
 
-sub to_text($;$) {
+sub to_text {
 	my $self = shift;
-	my $recursive = shift;
 
-	$recursive and return $self->_to_text_rec({});
-
-	return sprintf(
+	my $str = sprintf(
 		"%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n",
 		(
 			map {
@@ -422,18 +419,12 @@ sub to_text($;$) {
 		),
 		$self->attr_string()
 	);
-}
 
-sub _to_text_rec($$) {
-	my $self = shift;
-	my $seen = shift;
-	return "" if $seen->{$self->id}++;
-
-	my $text = $self->to_text();
 	for my $child ($self->children) {
-		$text .= $child->_to_text_rec($seen);
+		$str .= $child->to_text();
 	}
-	return $text;
+
+	return $str;
 }
 
 # rgc: add child GFF3Object

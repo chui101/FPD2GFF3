@@ -14,7 +14,8 @@ require "GFF3Object.pm";
 use Getopt::Long qw(:config gnu_getopt);
 
 our $maxthreads : shared;
-our ($verbose, $instance);
+our $verbose : shared;
+our $instance : shared;
 
 BEGIN {
 # get instance for use
@@ -206,15 +207,20 @@ sub worker {
 		}
 
 		# create the appropriate file name to write to
-		my $filename = $feature->{type};
+		my $filename = $instance . "_" . $feature->{type};
 		$filename .= "." . $feature->{dataset} if ($feature->{dataset});
 		$filename .= ".gff3";
 
 		# lock file handle for writing, output gff line to file
 		{
 			lock $filelock; # make sure no other threads are writing
+			unless (-e $filename) {
+				open FH, ">$filename";
+				print FH "##gff-version 3\n";
+				close FH;
+			}
 			open FH, ">>$filename";
-			print FH $gff->to_text(1);
+			print FH $gff->to_text();
 			print threads->tid() . ": output $feature->{name} to $filename\n" if $verbose;
 			close FH;
 		}
@@ -423,6 +429,7 @@ sub fgenesh_to_gff3 {
 	$gff->set_attr(start => $genestart);
 	$gff->set_attr(end => $geneend);
 	$gff->set_attr(score => $score);
+	$gff->set_attr(strand => $strand);
 	
 	# set up GFF3Object for TSS and populate info if it exists
 	$sth = $dbh->prepare("select score,start from fgenedata where runid = ? and genenumber = ? and feature = 'TSS'");
@@ -437,19 +444,21 @@ sub fgenesh_to_gff3 {
 		$tss->set_attr(start => $row[1]);
 		$tss->set_attr(end => $row[1]);
 		$tss->set_attr(score => $row[0]);
+		$tss->set_attr(strand => $strand);
 		$gff->add_child($tss);
 	}
 
 	# set up GFF3Object for mRNA part
 	my $mrna = new GFF3Object;
-	$mrna->set_attr(ID => $feature->{name}.":mRNA");
-	$mrna->set_attr(name => $feature->{name}.":mRNA");
+	$mrna->set_attr(ID => $feature->{name}.":primary_transcript_region");
+	$mrna->set_attr(name => $feature->{name}.":primary_transcript_region");
 	$mrna->set_attr(refseq => $contig);
 	$mrna->set_attr(source => "fgenesh");
 	$mrna->set_attr(method => "primary_transcript_region");
 	$mrna->set_attr(start => $genestart);
 	$mrna->set_attr(end => $geneend);
 	$mrna->set_attr(score => $score);
+	$mrna->set_attr(strand => $strand);
 	$gff->add_child($mrna);
 
 	# get and loop through CDSes
@@ -459,15 +468,15 @@ sub fgenesh_to_gff3 {
 	my $last_phase = 0;
 	while (my @row = $sth->fetchrow_array()) {
 		my $cds = new GFF3Object;
-		$cds->set_attr(ID => $feature->{name}.":exon".$row[4].":".$row[3]);
-		$cds->set_attr(name => $feature->{name}.":exon".$row[4].":".$row[3]);
+		$cds->set_attr(ID => $feature->{name}.":CDS");
+		$cds->set_attr(name => $feature->{name}.":CDS");
 		$cds->set_attr(refseq => $contig);
 		$cds->set_attr(source => "fgenesh");
-		$cds->set_attr(method => "exon");
+		$cds->set_attr(method => "CDS");
 		$cds->set_attr(start => $row[0]);
 		$cds->set_attr(end => $row[1]);
 		$cds->set_attr(score => $row[2]?$row[2]:0);
-		#TODO: calculate phase
+		$cds->set_attr(strand => $strand);
 		my $phase = ($last_phase - $last_len) % 3;
 		$last_len = $row[1] - $row[0] + 1;
 		$last_phase = $phase;
@@ -488,6 +497,7 @@ sub fgenesh_to_gff3 {
 		$tes->set_attr(start => $row[1]);
 		$tes->set_attr(end => $row[1]);
 		$tes->set_attr(score => $row[0]);
+		$tes->set_attr(strand => $strand);
 		$gff->add_child($tes);
 	}
 
