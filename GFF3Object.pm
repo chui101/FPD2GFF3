@@ -392,7 +392,7 @@ sub from_hash {
 		$self->{importid}, $self->{assembly}, $self->{dataset},
 		$self->{geneid}
 	) = (
-		$row->{dbid}, $row->{refseq}, $row->{source},
+		$row->{id}, $row->{refseq}, $row->{source},
 		$row->{method}, $row->{start}, $row->{end},
 		$row->{score}, $row->{strand}, $row->{phase},
 		$row->{text_id}, $row->{name}, $row->{parent},
@@ -432,8 +432,11 @@ sub add_child {
 	my $self = shift;
 	my $child = shift;
 	
-	# link child back to us
-	$child->set_attr(Parent => $self->{text_id});
+	# link child back to us if it's not linked
+	my @parents = $child->get_attr('Parent');
+	unless (grep { $_ eq $self->{text_id} } @parents) {
+		$child->append_attr(Parent => $self->{text_id});
+	}
 
 	# add child to our list
 	push @{$self->{children}}, $child;

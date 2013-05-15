@@ -247,8 +247,24 @@ sub gff3_to_gff3 {
 		my $row = $sth->fetchrow_hashref();
 		$gff3 = GFF3Object->from_hash($row);
 	}
+	my $xsth = $dbh->prepare("select gkey,value from gff3_extra where gff3_id = ?");
+	$xsth->execute($gff3->{dbid});
+	while (my ($key,$value) = $xsth->fetchrow_array()) {
+		$gff3->append_attr($key => $value);
+	}
+	# process the children
+ 	my $csth = $dbh->prepare("select id from gff3 where parent = ?");
+ 	$csth->execute($gff3->{text_id});
+ 	while (my ($child) = $csth->fetchrow_array()) {
+ 		my $next = {};
+ 		$next->{name} = "gff3.$child";
+		$gff3->add_child(gff3_to_gff3($next,$dbh));
+ 	}
+	
 	return $gff3;
 }
+
+
 
 ### Exonerate alignments
 sub exonerate_to_gff3 {
@@ -437,7 +453,6 @@ sub fgenesh_to_gff3 {
 	if (my @row = $sth->fetchrow_array()) {
 		my $tss = new GFF3Object;
 		$tss->set_attr(ID => $feature->{name}.":TSS");
-		$tss->set_attr(name => $feature->{name}.":TSS");
 		$tss->set_attr(refseq => $contig);
 		$tss->set_attr(source => "fgenesh");
 		$tss->set_attr(method => "TSS");
@@ -451,7 +466,6 @@ sub fgenesh_to_gff3 {
 	# set up GFF3Object for mRNA part
 	my $mrna = new GFF3Object;
 	$mrna->set_attr(ID => $feature->{name}.":primary_transcript_region");
-	$mrna->set_attr(name => $feature->{name}.":primary_transcript_region");
 	$mrna->set_attr(refseq => $contig);
 	$mrna->set_attr(source => "fgenesh");
 	$mrna->set_attr(method => "primary_transcript_region");
@@ -469,7 +483,6 @@ sub fgenesh_to_gff3 {
 	while (my @row = $sth->fetchrow_array()) {
 		my $cds = new GFF3Object;
 		$cds->set_attr(ID => $feature->{name}.":CDS");
-		$cds->set_attr(name => $feature->{name}.":CDS");
 		$cds->set_attr(refseq => $contig);
 		$cds->set_attr(source => "fgenesh");
 		$cds->set_attr(method => "CDS");
@@ -490,7 +503,6 @@ sub fgenesh_to_gff3 {
 	if (my @row = $sth->fetchrow_array()) {
 		my $tes = new GFF3Object;
 		$tes->set_attr(ID => $feature->{name}.":transcription_end_site");
-		$tes->set_attr(name => $feature->{name}.":transcription_end_site");
 		$tes->set_attr(refseq => $contig);
 		$tes->set_attr(source => "fgenesh");
 		$tes->set_attr(method => "transcription_end_site");
