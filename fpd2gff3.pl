@@ -72,7 +72,8 @@ my $workqueue = Thread::Queue->new();
 my @threads;
 # kind-of mutex to keep file writes atomic
 my $filelock : shared;
-my %seen_query : shared;
+my %exonerate_seen_query : shared;
+my %blast_seen_query : shared;
 
 # start the worker threads
 for (1 .. $maxthreads) {
@@ -104,7 +105,7 @@ sub queuefiller {
 	my $dbh = DBI->connect("dbi:mysql:$gbdb:$db_host","plantproject","projectplant") or die;
 
 	# query for gff3, add to queue
-	my $sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 1000;");
+	my $sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 100;");
 	$sth->execute();
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
@@ -125,7 +126,7 @@ sub queuefiller {
 	}
 
 	# query for fgenesh, add to queue
-	my $sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
+	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
 	$sth->execute();
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
@@ -247,6 +248,12 @@ sub gff3_to_gff3 {
 		my $row = $sth->fetchrow_hashref();
 		$gff3 = GFF3Object->from_hash($row);
 	}
+	
+	# fix refseq: contig_10 --> contig00010
+	if ($gff3->{refseq} =~ /contig_(\d+)/) {
+		$gff3->{refseq} = sprintf("contig%05d",$1);
+	}
+	
 	my $xsth = $dbh->prepare("select gkey,value from gff3_extra where gff3_id = ?");
 	$xsth->execute($gff3->{dbid});
 	while (my ($key,$value) = $xsth->fetchrow_array()) {
@@ -290,6 +297,8 @@ sub exonerate_to_gff3 {
 		 (\d+)\s+(.*)
 		/x
 	);
+	
+	
 	$query = $realquery if defined $realquery;
 	if (defined $local_start) {
 		$tst += ($local_start - 1);
@@ -303,8 +312,8 @@ sub exonerate_to_gff3 {
 	$query =~ /ACCESSION=([^|]+)/ and $gid = $1;
 	$query =~ /PROTEIN_ID=([^|]+)/ and $gid = $1;
 	$query =~ /^([A-Z]+\d+(?:\.\d+)?)\s/ and $gid = $1; # Starts with an ID
-	++$seen_query{$gid};
-	my $geneid = "$gid:match:$seen_query{$gid}";
+	++$exonerate_seen_query{$gid};
+	my $geneid = "$target:$gid:match:$exonerate_seen_query{$gid}";
 	defined $alignment or die "bad line '$vulgar'";
 	my $qsign = ($qstrand eq '-') ? -1 : 1;
 	my $tsign = ($tstrand eq '-') ? -1 : 1;
@@ -409,6 +418,92 @@ sub interpro_to_gff3 {
 sub blast_to_gff3 {
 	my ($feature, $dbh) = @_;
 	my $gff3;
+	my $sth;
+	
+	# get contig id and coordinates
+	my ($sc) = ($feature->{supercontig} =~ /Supercontig(\d+)/);
+	$sth = $dbh->prepare("select c.name, csc.startpos from c inner join csc on csc.contigid = c.id inner join sc on sc.id = csc.superid  where sc.id = ? and csc.startpos < ? order by startpos desc limit 1");
+	$sth->execute($sc,$feature->{start});
+	my ($contig, $contig_start) = $sth->fetchrow_array();
+	my $real_start = $feature->{start} - $contig_start + 1;
+	my $real_end = $feature->{end} - $contig_start + 1;
+	$contig = sprintf("contig%05d",$contig);
+	
+	# get info about this hit
+	my ($hitid) = ($feature->{name} =~ /.*blast.*\.(\d+)/);
+	$sth = $dbh->prepare("select b.querydef, bh.hitnum, bh.hitdef, b.program, b.expect, bh.hitidname  from blasthit as bh inner join blast as b on bh.blastID = b.id where bh.id = ?");
+	$sth->execute($hitid);
+	my ($querydef,$hitnum,$hitdef,$program,$hit_score,$links) = $sth->fetchrow_array();
+
+	# populate info in gff3 object
+	$gff3 = new GFF3Object;
+	$gff3->set_attr(ID => "$contig:$querydef:hit_$hitnum");
+	$gff3->set_attr(name => $hitdef);
+	$gff3->set_attr(refseq => $contig);
+	$gff3->set_attr(source => $program);
+	$gff3->set_attr(score => $hit_score);
+	$gff3->set_attr(start => $real_start);
+	$gff3->set_attr(end => $real_end);
+	my $type;
+	$type = "nucleotide_to_protein_match" if ($program eq "blastx");
+	$type = "nucleotide_to_nucleotide_match" if ($program eq "blastn");
+	$type = "translated_nucleotide_match" if (($program eq "tblastn") || ($program eq "tblastx"));
+	$type = "protein_to_protein_match" if ($program eq "blastp");
+	$gff3->set_attr(method => $type);
+	
+
+	#db links
+	# ontology (GO) and NCBI GI/NIH GenBank links: Ontology_term="GO:123456";Dbxref="NCBI_gi:12345,GenBank:ABC1234;"
+	if ($links =~ /gi\|(^\|)+/) $gff3->append_attr(Dbxref=>"NCBI_gi:$1");
+	if ($links =~ /gb\|(^\|)+/) $gff3->append_attr(Dbxref=>"GenBank:$1");
+	if ($links =~ /go\|(^\|)+/) $gff3->set_attr(Ontology_term=>"go:$1");
+	
+	# get HSPs
+	$sth = $dbh->prepare("select evalue,qseq,hseq,queryfrom,queryto from blasthsp where hitID = ?");
+	$sth->execute($hitid);
+	while (my ($hspscore,$qstr,$hstr,$qstart,$qend) = $sth->fetchrow_array()) {
+		# for each HSP create GFF3 object
+		my $hsp = new GFF3Object;
+
+		# add child
+		$gff3->add_child($hsp);
+
+		# calculate gapping
+		my $gap = "";
+		while (length($qstr) and (length($qstr) == length($hstr))) {
+			my ($q1,$q2) = ($qstr =~ /^([^-]*)(-*)/);
+			my ($h1,$h2) = ($hstr =~ /^([^-]*)(-*)/);
+			if (length($q1) > length($h1)) {
+				# insertion relative to query
+				$gap .= "M" . length($h1) . " I" . length($h2) . " ";
+				$qstr = substr($qstr,length($h1)+length($h2));
+				$hstr = substr($hstr,length($h1)+length($h2));
+			} elsif (length($q1) < length($h1)) {
+				# deletion relative to query
+				$gap .= "M" . length($q1) . " D" . length($q2) . " ";
+				$qstr = substr($qstr,length($q1)+length($q2));
+				$hstr = substr($hstr,length($q1)+length($q2));
+			} else {
+				#they are equal so remove the entire string
+				$gap .= "M" . length($qstr) . " ";
+				$qstr = "";
+				$hstr = "";
+			}
+		}
+		chop $gap; #remove trailing space
+		$hsp->set_attr(Gap => $gap);
+
+		$hsp->set_attr(refseq => $contig);
+		$hsp->set_attr(source => $program);
+		$hsp->set_attr(score => $hspscore);
+		$hsp->set_attr(start => $real_start);
+		$hsp->set_attr(end => $real_end);
+	
+		# target should be query sequence with coordinates
+		$hsp->set_attr(Target=>"$querydef $qstart $qend");
+		
+	}
+
 }
 
 ### FGenesh features
