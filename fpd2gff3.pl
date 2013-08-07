@@ -103,9 +103,76 @@ sub queuefiller {
 	DBI->import;
 
 	my $dbh = DBI->connect("dbi:mysql:$gbdb:$db_host","plantproject","projectplant") or die;
+	my $sth;
 
-	# query for gff3, add to queue
-	my $sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 100;");
+#	# query for gff3, add to queue
+#	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 100;");
+#	$sth->execute();
+#	while (my $row = $sth->fetchrow_hashref()) {
+#		# for each feature, put it in the queue
+#		my %feature:shared;
+#		$feature{name} = $row->{gname};
+#		# if feature has both type and dataset then split it
+#		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+#			$feature{type} = $1;
+#			$feature{dataset} = $2;
+#		# otherwise the whole thing is stored
+#		} else {
+#			$feature{type} = $row->{gclass};
+#			$feature{dataset} = "";
+#		}
+#
+#		# enqueue the feature
+#		$workqueue->enqueue(\%feature);
+#	}
+#
+#	# query for fgenesh, add to queue
+#	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
+#	$sth->execute();
+#	while (my $row = $sth->fetchrow_hashref()) {
+#		# for each feature, put it in the queue
+#		my %feature:shared;
+#		$feature{name} = $row->{gname};
+#		# if feature has both type and dataset then split it
+#		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+#			$feature{type} = $1;
+#			$feature{dataset} = $2;
+#		# otherwise the whole thing is stored
+#		} else {
+#			$feature{type} = $row->{gclass};
+#			$feature{dataset} = "";
+#		}
+#
+#		# enqueue the feature
+#		$workqueue->enqueue(\%feature);
+#	}
+#
+#	# query for exonerate, add to queue
+#	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
+#	$sth->execute();
+#	while (my $row = $sth->fetchrow_hashref()) {
+#		# for each feature, put it in the queue
+#		my %feature:shared;
+#		$feature{name} = $row->{gname};
+#		# if feature has both type and dataset then split it
+#		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+#			$feature{type} = $1;
+#			$feature{dataset} = $2;
+#		# otherwise the whole thing is stored
+#		} else {
+#			$feature{type} = $row->{gclass};
+#			$feature{dataset} = "";
+#		}
+#
+#		# enqueue the feature
+#		$workqueue->enqueue(\%feature);
+#	}
+
+	# query for blast, add to queue
+	$sth = $dbh->prepare("select fgroup.gclass, fgroup.gname, fdata.fstart, fdata.fstop, fdata.fref
+				from fgroup 
+				join fdata on fgroup.gid=fdata.gid 
+				where fgroup.gclass like 'blast%' limit 1000;;");
 	$sth->execute();
 	while (my $row = $sth->fetchrow_hashref()) {
 		# for each feature, put it in the queue
@@ -120,48 +187,10 @@ sub queuefiller {
 			$feature{type} = $row->{gclass};
 			$feature{dataset} = "";
 		}
-
-		# enqueue the feature
-		$workqueue->enqueue(\%feature);
-	}
-
-	# query for fgenesh, add to queue
-	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
-	$sth->execute();
-	while (my $row = $sth->fetchrow_hashref()) {
-		# for each feature, put it in the queue
-		my %feature:shared;
-		$feature{name} = $row->{gname};
-		# if feature has both type and dataset then split it
-		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
-			$feature{type} = $1;
-			$feature{dataset} = $2;
-		# otherwise the whole thing is stored
-		} else {
-			$feature{type} = $row->{gclass};
-			$feature{dataset} = "";
-		}
-
-		# enqueue the feature
-		$workqueue->enqueue(\%feature);
-	}
-
-	# query for exonerate, add to queue
-	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
-	$sth->execute();
-	while (my $row = $sth->fetchrow_hashref()) {
-		# for each feature, put it in the queue
-		my %feature:shared;
-		$feature{name} = $row->{gname};
-		# if feature has both type and dataset then split it
-		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
-			$feature{type} = $1;
-			$feature{dataset} = $2;
-		# otherwise the whole thing is stored
-		} else {
-			$feature{type} = $row->{gclass};
-			$feature{dataset} = "";
-		}
+		# store reference, start and stop for BLAST
+		$feature{supercontig} = $row->{fref};
+		$feature{start} = $row->{fstart};
+		$feature{end} = $row->{fstop};
 
 		# enqueue the feature
 		$workqueue->enqueue(\%feature);
@@ -430,14 +459,16 @@ sub blast_to_gff3 {
 	$contig = sprintf("contig%05d",$contig);
 	
 	# get info about this hit
-	my ($hitid) = ($feature->{name} =~ /.*blast.*\.(\d+)/);
+	my $hitid;
+	if ($feature->{name} =~ /(blastn|blastx|tblastn|tblastx)\.(\d+)/) {$hitid=$2;}
 	$sth = $dbh->prepare("select b.querydef, bh.hitnum, bh.hitdef, b.program, b.expect, bh.hitidname  from blasthit as bh inner join blast as b on bh.blastID = b.id where bh.id = ?");
 	$sth->execute($hitid);
 	my ($querydef,$hitnum,$hitdef,$program,$hit_score,$links) = $sth->fetchrow_array();
 
 	# populate info in gff3 object
 	$gff3 = new GFF3Object;
-	$gff3->set_attr(ID => "$contig:$querydef:hit_$hitnum");
+	my $parent_id = "$contig:$querydef:hit$hitnum";
+	$gff3->set_attr(ID => $parent_id);
 	$gff3->set_attr(name => $hitdef);
 	$gff3->set_attr(refseq => $contig);
 	$gff3->set_attr(source => $program);
@@ -454,14 +485,21 @@ sub blast_to_gff3 {
 
 	#db links
 	# ontology (GO) and NCBI GI/NIH GenBank links: Ontology_term="GO:123456";Dbxref="NCBI_gi:12345,GenBank:ABC1234;"
-	if ($links =~ /gi\|(^\|)+/) $gff3->append_attr(Dbxref=>"NCBI_gi:$1");
-	if ($links =~ /gb\|(^\|)+/) $gff3->append_attr(Dbxref=>"GenBank:$1");
-	if ($links =~ /go\|(^\|)+/) $gff3->set_attr(Ontology_term=>"go:$1");
+	if ($links =~ /gi\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"NCBI_gi:$1");}
+	if ($links =~ /(gb|tpg)\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"GenBank:$2");}
+	if ($links =~ /ref\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"RefSeq:$1");}
+	if ($links =~ /sp\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"Swiss-Prot:$1");}
+	if ($links =~ /pdb\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"PDB:$1");}
+	if ($links =~ /pir\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"PIR:$1");}
+	#if ($links =~ /prf\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"PIR:$1");} #ignore these for now - TODO: figure out a good dbxref that still works
+	if ($links =~ /(emb|tpe)\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"EMBL:$2");}
+	if ($links =~ /(dbj|tpd)\|([^\|]+)/) {$gff3->append_attr(Dbxref=>"DDBJ:$2");}
+	if ($links =~ /go\|([^\|]+)/) {$gff3->set_attr(Ontology_term=>"go:$1");}
 	
 	# get HSPs
-	$sth = $dbh->prepare("select evalue,qseq,hseq,queryfrom,queryto from blasthsp where hitID = ?");
+	$sth = $dbh->prepare("select evalue,qseq,hseq,queryfrom,queryto,hspnum from blasthsp where hitID = ?");
 	$sth->execute($hitid);
-	while (my ($hspscore,$qstr,$hstr,$qstart,$qend) = $sth->fetchrow_array()) {
+	while (my ($hspscore,$qstr,$hstr,$qstart,$qend,$hspnum) = $sth->fetchrow_array()) {
 		# for each HSP create GFF3 object
 		my $hsp = new GFF3Object;
 
@@ -491,8 +529,9 @@ sub blast_to_gff3 {
 			}
 		}
 		chop $gap; #remove trailing space
+		$hsp->set_attr(ID => "$parent_id:hsp$hspnum");
 		$hsp->set_attr(Gap => $gap);
-
+		$hsp->set_attr(method => "match_part");
 		$hsp->set_attr(refseq => $contig);
 		$hsp->set_attr(source => $program);
 		$hsp->set_attr(score => $hspscore);
@@ -503,6 +542,7 @@ sub blast_to_gff3 {
 		$hsp->set_attr(Target=>"$querydef $qstart $qend");
 		
 	}
+	return $gff3;
 
 }
 
