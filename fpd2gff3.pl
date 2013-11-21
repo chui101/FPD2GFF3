@@ -105,68 +105,68 @@ sub queuefiller {
 	my $dbh = DBI->connect("dbi:mysql:$gbdb:$db_host","plantproject","projectplant") or die;
 	my $sth;
 
-#	# query for gff3, add to queue
-#	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 100;");
-#	$sth->execute();
-#	while (my $row = $sth->fetchrow_hashref()) {
-#		# for each feature, put it in the queue
-#		my %feature:shared;
-#		$feature{name} = $row->{gname};
-#		# if feature has both type and dataset then split it
-#		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
-#			$feature{type} = $1;
-#			$feature{dataset} = $2;
-#		# otherwise the whole thing is stored
-#		} else {
-#			$feature{type} = $row->{gclass};
-#			$feature{dataset} = "";
-#		}
-#
-#		# enqueue the feature
-#		$workqueue->enqueue(\%feature);
-#	}
-#
-#	# query for fgenesh, add to queue
-#	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
-#	$sth->execute();
-#	while (my $row = $sth->fetchrow_hashref()) {
-#		# for each feature, put it in the queue
-#		my %feature:shared;
-#		$feature{name} = $row->{gname};
-#		# if feature has both type and dataset then split it
-#		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
-#			$feature{type} = $1;
-#			$feature{dataset} = $2;
-#		# otherwise the whole thing is stored
-#		} else {
-#			$feature{type} = $row->{gclass};
-#			$feature{dataset} = "";
-#		}
-#
-#		# enqueue the feature
-#		$workqueue->enqueue(\%feature);
-#	}
-#
-#	# query for exonerate, add to queue
-#	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
-#	$sth->execute();
-#	while (my $row = $sth->fetchrow_hashref()) {
-#		# for each feature, put it in the queue
-#		my %feature:shared;
-#		$feature{name} = $row->{gname};
-#		# if feature has both type and dataset then split it
-#		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
-#			$feature{type} = $1;
-#			$feature{dataset} = $2;
-#		# otherwise the whole thing is stored
-#		} else {
-#			$feature{type} = $row->{gclass};
-#			$feature{dataset} = "";
-#		}
-#
-#		# enqueue the feature
-#		$workqueue->enqueue(\%feature);
-#	}
+	# query for gff3, add to queue
+	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'gff3%' LIMIT 100;");
+	$sth->execute();
+	while (my $row = $sth->fetchrow_hashref()) {
+		# for each feature, put it in the queue
+		my %feature:shared;
+		$feature{name} = $row->{gname};
+		# if feature has both type and dataset then split it
+		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+			$feature{type} = $1;
+			$feature{dataset} = $2;
+		# otherwise the whole thing is stored
+		} else {
+			$feature{type} = $row->{gclass};
+			$feature{dataset} = "";
+		}
+
+		# enqueue the feature
+		$workqueue->enqueue(\%feature);
+	}
+
+	# query for fgenesh, add to queue
+	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'fgene%' LIMIT 1000;");
+	$sth->execute();
+	while (my $row = $sth->fetchrow_hashref()) {
+		# for each feature, put it in the queue
+		my %feature:shared;
+		$feature{name} = $row->{gname};
+		# if feature has both type and dataset then split it
+		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+			$feature{type} = $1;
+			$feature{dataset} = $2;
+		# otherwise the whole thing is stored
+		} else {
+			$feature{type} = $row->{gclass};
+			$feature{dataset} = "";
+		}
+
+		# enqueue the feature
+		$workqueue->enqueue(\%feature);
+	}
+
+	# query for exonerate, add to queue
+	$sth = $dbh->prepare("SELECT gclass, gname FROM fgroup WHERE gclass LIKE 'exonerate%' LIMIT 1000;");
+	$sth->execute();
+	while (my $row = $sth->fetchrow_hashref()) {
+		# for each feature, put it in the queue
+		my %feature:shared;
+		$feature{name} = $row->{gname};
+		# if feature has both type and dataset then split it
+		if ($row->{gclass} =~ /^(\w+)\:(\d+)$/) {
+			$feature{type} = $1;
+			$feature{dataset} = $2;
+		# otherwise the whole thing is stored
+		} else {
+			$feature{type} = $row->{gclass};
+			$feature{dataset} = "";
+		}
+
+		# enqueue the feature
+		$workqueue->enqueue(\%feature);
+	}
 
 	# query for blast, add to queue
 	$sth = $dbh->prepare("select fgroup.gclass, fgroup.gname, fdata.fstart, fdata.fstop, fdata.fref
